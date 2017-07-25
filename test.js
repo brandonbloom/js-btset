@@ -25,3 +25,14 @@ console.log(xs.count());
 
 console.log(xs.lookup(123, 123));
 console.log(xs.lookup(890, 'not found'));
+
+
+console.log(
+  bts.empty.conj(1).conj(2)
+  .equal(bts.empty.conj(1))
+);
+
+console.log(
+  bts.empty.conj(1).conj(2)
+  .equal(bts.empty.conj(1).conj(2).conj(3).disj(3))
+);

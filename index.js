@@ -25,6 +25,29 @@ let pathSet = (path, level, idx) => {
   return path | (idx << level);
 };
 
+// Returns path of next item in traveral, or -1 if reached end.
+let nextPath = (path, node, level) => {
+  let idx = pathGet(path, level);
+  if (level > 0) {
+    // Inner node.
+    let subPath = nextPath(node.ptrs[idx], path, level - levelShift);
+    if (subPath === -1) {
+      // Nested node overflow.
+      if (idx + 1 < node.ptrs.length) {
+        // Advance current node idx, reset subsequent indexes.
+        return pathSet(emptyPath, level, idx + 1);
+      }
+      return -1;
+    }
+    return pathSet(subPath, level, idx);
+  } else if (idx + 1 < node.keys.length) {
+    // Advance within leaf.
+    return pathSet(emptyPath, 0, idx + 1);
+  }
+  // Overflow leaf.
+  return -1;
+};
+
 //XXX Export.
 let cmp = (x, y) => (x < y ? -1 : y < x ? 1 : 0);
 
@@ -369,7 +392,35 @@ class Leaf {
   }
 }
 
+// Iterator.
+
+class Iterator {
+  constructor(set, path, keys) {
+    this._set = set;
+    this._path = path;
+    this._keys = keys;
+  }
+
+  first() {
+    return this._keys[this._path & pathMask];
+  }
+
+  next() {
+    if ((this._path & pathMask) + 1 < this._keys.length) {
+      return new Iterator(this._set, this._path + 1, this._keys);
+    }
+    let path = this._set._nextPath(this._path);
+    if (path === -1) {
+      return null;
+    }
+    return new Iterator(this._set, path, this._set.keysFor(path));
+  }
+}
+
 // BTSet.
+
+
+let sentinal = {};
 
 class BTSet {
   constructor(root, shift, cnt) {
@@ -382,12 +433,13 @@ class BTSet {
     if (this._cnt !== other._cnt) {
       return false;
     }
-    let it = this.iterator();
-    while (it.hasNext()) {
-      let x = it.next();
+    let it = this.iter();
+    while (it !== null) {
+      let x = it.first();
       if (!other.contains(x)) {
         return false;
       }
+      it = it.next();
     }
     return true;
   }
@@ -428,6 +480,10 @@ class BTSet {
     return this._root.lookup(k, notFound);
   }
 
+  contains(k) {
+    return this.lookup(k, sentinal) !== sentinal;
+  }
+
   count() {
     return this._cnt;
   }
@@ -441,38 +497,22 @@ class BTSet {
     }
     return node.keys;
   }
+
+  iter() {
+    if (this._cnt === 0) {
+      return null;
+    }
+    return new Iterator(this, emptyPath, this._keysFor(emptyPath));
+  }
+
+  _nextPath(path) {
+    return nextPath(path, this._root, this._shift);
+  }
 }
 
 /*
 
 ;; iteration
-
-(defn -next-path ^long [node ^long path ^long level]
-  (let [idx (path-get path level)]
-    (if (pos? level)
-      ;; inner node
-      (let [sub-path (-next-path (da/aget (.-pointers ^Node node) idx) path (- level level-shift))]
-        (if (== -1 sub-path)
-          ;; nested node overflow
-          (if (< (inc idx) (da/alength (.-pointers ^Node node)))
-            ;; advance current node idx, reset subsequent indexes
-            (path-set empty-path level (inc idx))
-            ;; current node overflow
-            -1)
-          ;; keep current idx
-          (path-set sub-path level idx)))
-      ;; leaf
-      (if (< (inc idx) (da/alength (.-keys ^Leaf node)))
-        ;; advance leaf idx
-        (path-set empty-path 0 (inc idx))
-        ;; leaf overflow
-        -1))))
-
-(defn next-path
-  "Returns path representing next item after `path` in natural traversal order,
-   or -1 if end of tree has been reached"
-  ^long [^BTSet set ^long path]
-  (-next-path (.-root set) path (.-shift set)))
 
 (defn -rpath
   "Returns rightmost path possible starting from node and going deeper"
@@ -526,75 +566,8 @@ class BTSet {
           right  (inc (-rpath (.-root set) (.-shift set)))]
       (iter set left right))))
 
-(deftype Iter [set ^long left ^long right keys ^long idx]
-  #?@(:cljs [
-    ISeqable
-    (-seq [this] (when keys this))
-
-    ISeq
-    (-first [this] (iter-first this))
-    (-rest [this]  (or (iter-next this) ()))
-
-    INext
-    (-next [this] (iter-next this))
-
-    IChunkedSeq
-    (-chunked-first [this] (iter-chunk this))
-    (-chunked-rest  [this] (or (-chunked-next this) ()))
-
-    IChunkedNext
-    (-chunked-next  [this] (iter-chunked-next this))
-             
-    IReduce
-    (-reduce [this f] (iter-reduce this f))
-    (-reduce [this f start] (iter-reduce this f start))
-
-    IReversible
-    (-rseq [this] (iter-rseq this))]
-  ))
-
 (defn iter [set ^long left ^long right]
   (Iter. set left right (keys-for set left) (path-get left 0)))
-
-(defn iter-first [^Iter iter]
-  (when (.-keys iter)
-    (da/aget (.-keys iter) (.-idx iter))))
-
-(defn iter-next [^Iter iter]
-  (let [set   (.-set iter)
-        left  (.-left iter)
-        right (.-right iter)
-        keys  (.-keys iter)
-        idx   (.-idx iter)]
-    (when keys
-      (if (< (inc idx) (da/alength keys))
-        ;; can use cached array to move forward
-        (when (< (inc left) right)
-          (Iter. set (inc left) right keys (inc idx)))
-        (let [left (next-path set left)]
-          (when (and (not= -1 left) (< left right))
-            (datascript.btset/iter set left right)))))))
-
-(defn iter-chunk [^Iter iter]
-  (let [left  (.-left iter)
-        right (.-right iter)
-        keys  (.-keys iter)
-        idx   (.-idx iter)
-        end-idx (if (= (bit-or left path-mask)
-                       (bit-or right path-mask))
-                  (bit-and right path-mask)
-                  (da/alength keys))]
-      (#?(:cljs array-chunk) keys idx end-idx)))
-
-(defn iter-chunked-next [^Iter iter]
-  (let [set   (.-set iter)
-        left  (.-left iter)
-        right (.-right iter)
-        keys  (.-keys iter)
-        idx   (.-idx iter)]
-    (let [left (next-path set (+ left (- (da/alength keys) idx 1)))]
-      (when (and (not= -1 left) (< left right))
-        (datascript.btset/iter set left right)))))
 
 (defn iter-rseq [^Iter iter]
   (let [set   (.-set iter)
@@ -602,38 +575,6 @@ class BTSet {
         right (.-right iter)]
     (when (.-keys iter)
       (riter set (prev-path set left) (prev-path set right)))))
-
-(defn iter-reduce
-  ([^Iter iter f]
-    (if (nil? (.-keys iter))
-      (f)
-      (let [first (iter-first iter)]
-        (if-let [next (iter-next iter)]
-          (iter-reduce next f first)
-          first))))
-        
-  ([^Iter iter f start]
-    (let [set   (.-set iter)
-          right (.-right iter)]
-      (loop [left (.-left iter)
-             keys (.-keys iter)
-             idx  (.-idx iter)
-             acc  start]
-        (if (nil? keys)
-          acc
-          (let [new-acc (f acc (da/aget keys idx))]
-            (cond
-              (reduced? new-acc)
-                @new-acc
-              (< (inc idx) (da/alength keys)) ;; can use cached array to move forward
-                (if (< (inc left) right)
-                  (recur (inc left) keys (inc idx) new-acc)
-                  new-acc)
-              :else
-                (let [new-left (next-path set left)]
-                  (if (and (not== -1 new-left) (< new-left right))
-                    (recur new-left (keys-for set new-left) (path-get new-left 0) new-acc)
-                    new-acc)))))))))
 
 ;; reverse iteration
 
@@ -684,34 +625,6 @@ class BTSet {
             new-right (next-path set right)
             new-right (if (== new-right -1) (inc right) new-right)]
         (iter set new-left new-right)))))
-
-
-;; distance
-
-(defn -distance [node ^long left ^long right ^long level]
-  (let [idx-l (path-get left level)
-        idx-r (path-get right level)]
-    (if (pos? level)
-      ;; inner node
-      (if (== idx-l idx-r)
-        (-distance (da/aget (.-pointers ^Node node) idx-l) left right (- level level-shift))
-        (loop [level level
-               res   (- idx-r idx-l)]
-          (if (== 0 level)
-            res
-            (recur (- level level-shift) (* res avg-len)))))
-      (- idx-r idx-l))))
-
-(defn distance [^BTSet set ^long path-l ^long path-r]
-  (cond
-    (== path-l path-r) 0
-    (== (inc path-l) path-r) 1
-    (== (next-path set path-l) path-r) 1
-    :else (-distance (.-root set) path-l path-r (.-shift set))))
-
-(defn est-count [^Iter iter]
-  (distance (.-set iter) (.-left iter) (.-right iter)))
-
 
 ;; Slicing
 
