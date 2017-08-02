@@ -155,14 +155,6 @@ let checkNSplice = (arr, from, to, newArr) => {
   return splice(arr, from, to, newArr);
 };
 
-let amapInPlace = (f, arr) => {
-  let n = arr.length;
-  for (let i = 0; i < n; i++) {
-    arr[i] = f(arr[i]);
-  }
-  return arr;
-};
-
 // Splits `arr` into arrays of size between min-len and max-len,
 // trying to stick to (min+max)/2.
 let arrPartitionApprox = (minLen, maxLen, arr) => {
@@ -419,8 +411,7 @@ class Iterator {
 
 // BTSet.
 
-
-let sentinal = {};
+let sentinel = {};
 
 class BTSet {
   constructor(root, shift, cnt) {
@@ -481,7 +472,7 @@ class BTSet {
   }
 
   contains(k) {
-    return this.lookup(k, sentinal) !== sentinal;
+    return this.lookup(k, sentinel) !== sentinel;
   }
 
   count() {
@@ -565,9 +556,6 @@ class BTSet {
     (let [left   empty-path
           right  (inc (-rpath (.-root set) (.-shift set)))]
       (iter set left right))))
-
-(defn iter [set ^long left ^long right]
-  (Iter. set left right (keys-for set left) (path-get left 0)))
 
 (defn iter-rseq [^Iter iter]
   (let [set   (.-set iter)
